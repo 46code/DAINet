@@ -1,0 +1,92 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Env
+.env*
+.venv/
+
+# Raw data
+data/raw/
+*.RAW
+*.dng
+*.DNG
+*.cr3
+*.CR3
+*.arw
+*.ARW
+
+# Generated artifacts
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+outputs/
+results/
+precomputed/
+cache/
+extra/
+logs/
+plots/
+runs/
+wandb/
+
+# Misc leftovers (e.g. legacy watchdog)
+*.jsonl
+scratch/
+
+# IDE / OS
+.vscode/
+.DS_Store
+.claude
+.ipynb_checkpoints/
+notebooks/
+
+# Python build / distribution
+build/
+dist/
+*.egg-info/
+
+# Local secrets
+scripts/.dropbox_token
+scripts/.dropbox_url
+samples/
+
+# Benchmark harness heavy artifacts (recreated by ben_model setup; never in VCS)
+ben_model/weights/
+ben_model/data_prep/materialized/
+ben_model/repos/
+
+# Generated report figures
+out/
+
+# Report / thesis / slides / project-context material — kept on disk, packaged into
+# separate zips, and intentionally NOT part of the public code repository.
+docs/
+report_docs/
+ppt_docs/
+presentation_assets/
+latex_report/
+*.synctex.gz
+scratch_build.log
+ben_model/results_archive/
+
+# LaTeX build intermediates (keep .tex/.bib/.sty/chapters/images). The **/
+# form also catches per-chapter build files in subdirectories.
+latex_report/**/*.aux
+latex_report/**/*.log
+latex_report/**/*.bbl
+latex_report/**/*.blg
+latex_report/**/*.brf
+latex_report/**/*.fdb_latexmk
+latex_report/**/*.fls
+latex_report/**/*.idx
+latex_report/**/*.ilg
+latex_report/**/*.ind
+latex_report/**/*.lof
+latex_report/**/*.lot
+latex_report/**/*.out
+latex_report/**/*.toc
+latex_report/Main.pdf
+

@@ -1,0 +1,283 @@
+# dainet — full-capacity training config (target: high PSNR / MS-SSIM / LPIPS).
+#
+# Single source of truth for full-dataset training on MIT-Multi-Illumination.
+# Consumes jpg/{train,test}/, jpg_gt/{train,test}/, plus two precompute caches:
+#   - data/raw/mit_mi/sam_masks/{split}/<scene>/sam_mip2.png          (SAM2, semantic)
+#   - data/raw/mit_mi/superpixels/{split}/<scene>/chroma_clusters_mip2.png  (chromaticity K-means, material)
+# Both caches are required at train + val time; the trainer hard-fails if
+# either is missing for any scene.
+
+paths:
+  jpg_root:                data/raw/mit_mi/jpg
+  jpg_gt_root:             data/raw/mit_mi/jpg_gt
+  # Held-out test split lives at a non-standard (doubly-nested) location, so it
+  # is pointed at explicitly. When set, build_test_dataset() uses these verbatim
+  # instead of <jpg_root>/test + <jpg_gt_root>/test. Test-only; unused in training.
+  test_jpg_root:           data/raw/mit_mi/test/input/test
+  test_gt_root:            data/raw/mit_mi/test/gt/test
+  sam_root:                data/raw/mit_mi/sam_masks
+  superpixel_root:         data/raw/mit_mi/superpixels
+  normals_root:            data/raw/mit_mi/normals
+  checkpoint_dir:          checkpoints
+  log_dir:                 logs
+  plot_dir:                plots
+
+# Data-side knobs that are not paths. Material supervision is opt-in: when
+# `use_material: true` and the taxonomy JSON at `material_taxonomy_path`
+# exists, the dataset emits `material_seg` + `has_material` on train/val
+# (never on test); the loss skips with zero contribution on batches where
+# has_material is False.
+data:
+  use_material: true
+  material_taxonomy_path: data/raw/mit_mi/material_taxonomy.json
+  sam_fusion:
+    k_fusion: 64                    # 2 * K_material so each material gets ~2 K-means sub-clusters
+    min_area: 64                    # post-equivalence-class merge floor (mip2 pixels)
+    centroids_path: data/raw/mit_mi/sam_fusion_centroids.npy
+
+spatial:
+  size: [512, 640]
+
+model:
+  # ===== dainet_full — maximal-capacity baseline (run of record). =====
+  # Every architectural component is ON and every optional head is supervised
+  # by its loss (see the `loss:` block). Ablations turn ONE component off.
+  # Backbone — ConvNeXt-Base (~88M params).
+  backbone: convnext_base
+  embed_dim: 256             # full-capacity illum/seg embedding (was 192)
+  seg_embed_dim: 256
+  illum_hidden: 256
+  attn_heads: 8
+  sh_l_max: 4                # 25 SH coefficients per channel
+  pretrained_encoder: true
+  # SwinV2 bottleneck on s4 (residual self-attention). On in the full config.
+  use_swin_bottleneck: true
+  # P1.3 specular branch — ON and supervised by loss.specular_bce. The head
+  # reads input RGB and predicts a specular-probability map so highlights are
+  # not baked into R. (Ablation `abl_no_specular` flips this + the loss off.)
+  use_specular_head: true
+  # Latent illumination token cross-attends the bottleneck features and
+  # contributes a learned addition to illum_emb (zero-init out_proj keeps
+  # identity-at-init). At inference this replaces a pure null_illum_emb
+  # fallback with a learned direction-agnostic illumination prior.
+  use_illum_token: true
+  use_reflectance_memory: false   # experimental EMA memory — not a claim, kept off
+  reflectance_memory_size: 256
+  # Material auxiliary classification head (training-only). Tap point is
+  # s4 post-SwinV2 pre-Fusion. Adds ~0.27M params on ConvNeXt-Base; output
+  # is `material_logits`, consumed by loss.material_ce (+ material_R_var).
+  # Inference / val pass `compute_material=False`.
+  use_material_head: true
+  material_head_hidden: 256
+  # Surface-normals fusion (novelty D). "encoder" = a dedicated multi-scale
+  # NormalsEncoder adds a zero-init residual onto each ConvNeXt stage (backbone
+  # stays pure-RGB / pretrained-safe; normals get real spatial capacity at every
+  # scale). Alternatives: "prefuse" (legacy 1x1 RGB⊕normals 6→3) and "none"
+  # (pure RGB, = `abl_no_normals`). See models/normals_encoder.py.
+  use_normals: true
+  normals_fusion: encoder
+  # SAM2 segmentation FiLM conditioning. When false the encoder always sees the
+  # learned null_seg_emb even if a seg map is on disk — used by the spatial-prior
+  # ablation (`abl_no_spatial_priors`). ON in dainet_full.
+  use_sam_conditioning: true
+  # Illumination direction encoding. "continuous" = sin/cos/log + MLP over
+  # (φ,θ,b) — generalises to unseen directions (contribution C1). "categorical"
+  # = nn.Embedding(25) indexed by direction_id — the ablation baseline that
+  # cannot interpolate (`abl_dirgen_categorical`).
+  direction_encoding: continuous
+  num_directions: 25
+  # Illumination chroma-field factorisation: L = L_intensity · L_chroma,
+  # where L_chroma is a smooth, colour-only (unit-geomean) field that absorbs
+  # local colour casts without smearing material edges. Zero-init ⇒ field ≡ 1
+  # ⇒ identity-at-init preserved. ON in dainet_full. See models/illum_chroma.py.
+  use_illum_chroma_field: true
+  # Global illuminant estimation head (training-only aux). Predicts the scene
+  # illuminant chromaticity from illum_emb; supervised in angular space by
+  # loss.illuminant_angular (training-only color-constancy aux). Output is
+  # never consumed downstream. ON in dainet_full. See models/illuminant_head.py.
+  use_illuminant_head: true
+  # Light-direction head (contribution C). Predicts (φ,θ,b) from the s4
+  # bottleneck and routes it through illum_embed at inference — replacing the
+  # null token so deploy conditions on a learned direction (no GT metadata).
+  # Supervised by loss.direction_pred; continuous-encoding only (auto-off under
+  # categorical). ON in dainet_full. See models/direction_head.py.
+  use_direction_head: true
+  # Teacher-forcing mix: fraction of full-cond batches that feed the head's
+  # PREDICTED (φ,θ,b) instead of GT, so the model adapts to the inference
+  # distribution (exposure-bias mitigation). Only used when use_direction_head.
+  direction_pred_p: 0.5
+  # ConvNeXt on Ampere/Turing under bf16 typically gains ~15-25% from
+  # channels_last (no capacity change, only memory format). See
+  # docs/dainet_training.md "Performance notes".
+  channels_last: true
+
+dataset:
+  val_ratio: 0.10
+  subset_ratio: 1.0          # 1.0 = full data; set <1.0 for ablation thinning
+  # Directions sampled per scene per training epoch. null/0 = all 25 (default,
+  # ScenePairBatchSampler with same-scene pairs). 1 = one direction/scene/epoch
+  # (resampled each epoch) — the `abl_single_direction` ablation; cross-direction
+  # losses then go to zero by construction. Only 1 vs all is supported.
+  directions_per_scene: null
+
+training:
+  # Single-GPU 24 GB budget on Quadro RTX 6000 with ConvNeXt-Base + SwinV2.
+  # Throughput-tuned for the full 24 GB (2026-06-08): activation_checkpoint OFF
+  # (no backward recompute → ~25-30% faster steps) + batch_size 10. Measured
+  # train-step peak ≈ 0.76 + 1.67·bs GB → bs=10 ≈ 17.5 GB (full-loss/val ≈
+  # 19-20 GB), leaving a safe ~4-5 GB margin. If a card OOMs, drop to bs=8
+  # (≈14 GB) or set activation_checkpoint: true (≈9 GB at bs=8). LR is left at
+  # 2e-5 (the 8→10 batch change is small enough not to need rescaling).
+  batch_size: 10
+  grad_accum_steps: 1
+  val_batch_size: 10         # val has no backward — bigger batch is free
+  val_max_batches: null      # null = full val set
+  # Interval (sub-epoch) validation is DISABLED (0) — val_live + val_ema run
+  # once per epoch only. The mid-epoch pass roughly doubled validation cost
+  # for a smoother wandb curve we don't need at an 8-epoch budget. Set to an
+  # int N to re-enable a full live+EMA pass every N optimizer steps.
+  val_interval_iters: 0
+  val_interval_max_batches: null   # per-pass cap when interval val is on
+  ema_eval_every_n: 1        # EMA tracks live closely; cheap to run every epoch
+  epochs: 7                  # uniform budget (baseline + every ablation); val plateaus by ep5-6
+  # 4 workers (not 8) — each persistent worker holds its own copy of the
+  # bounded module-level lru_caches for SAM / chroma / material masks. At
+  # 8 workers × ~few-GB-per-worker the host RAM (125 GB shared) was OOM-
+  # killed mid-epoch. prefetch_factor reduced from 4 → 2 for the same reason.
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 2
+  # AMP mode: bf16 (default) | fp16 | off. bf16 has fp32-range exponent and
+  # is the stable choice for the Retinex log/exp/div losses; fp16 needs a
+  # GradScaler and underflows at log_chrom's 1/(x+eps) ≈ 100/pixel.
+  amp: bf16
+  grad_clip: 1.0
+  seed: 42
+  # Activation checkpointing — recomputes the ConvNeXt stages + SwinV2 block in
+  # the backward pass to trade ~25-30% step time for a large memory saving.
+  # DISABLED (2026-06-08): measured peak fits the full 24 GB without it (bs=10
+  # ≈ 17.5 GB), so we keep the activations and train faster. Re-enable only as
+  # an OOM escape valve (then it is bit-identical to off, just slower).
+  activation_checkpoint: false
+  # torch.compile the model (opt-in). Off by default: the hard-fail finiteness
+  # checks + the custom fp32 loss stack can introduce graph breaks, so validate
+  # per-run before trusting it. When it does compile cleanly it is the single
+  # biggest free speedup (~20-40% step) at identical capacity.
+  compile: false
+  # Classifier-free conditioning dropout. Lower than before (0.20 → 0.15)
+  # so probe_sh fires on ~85% of training batches instead of 80%.
+  null_cond_prob: 0.15
+  # EMA — shadow weights tracked for val + best-checkpoint selection.
+  ema_decay: 0.999
+  ema_eval: true
+  # Per-iteration latest.pt checkpoint cadence (set to 0 to disable).
+  checkpoint_interval_iters: 200
+  optimizer:
+    name: adamw
+    # Lowered 5e-5 → 2e-5 so AMP loss-scale shake-out doesn't trigger NaN
+    # gradients in the first few hundred steps. Cosine schedule still ramps
+    # to (lr) at end of warmup then anneals to min_lr.
+    lr: 2.0e-5
+    weight_decay: 0.01
+    betas: [0.9, 0.999]
+  scheduler:
+    name: cosine
+    warmup_epochs: 1
+    min_lr: 5.0e-7
+  early_stopping:
+    enabled: false
+    # Final-baseline budget is 7 epochs; early stopping disabled because
+    # the run is short enough that the full epoch budget always completes.
+    metric: psnr
+    mode: max
+    patience: 3
+    min_delta: 0.02
+
+loss:
+  # ===== dainet_full — curated, role-balanced loss stack (2026-06-03). =====
+  #
+  # Design principle: every term has a DISTINCT, non-conflicting role and every
+  # optional head is supervised by its loss. Known-fighting or redundant terms
+  # are not in the tree at all: e.g. `local_chroma` is the redesigned edge-aware
+  # chroma-TV on I_out (cannot fight recon), NOT the old R+SAM-id version. The
+  # old weight-0 ablation slots (dists, lab_chroma_ab, region_mean, highlight,
+  # …) were deleted 2026-06-05 — no run used them. Total active weight ≈ 2.49.
+
+  # --- Reconstruction anchor (pixel + chroma + perceptual) ---
+  recon_l1:            0.80    # primary pixel supervision
+  log_chrom:           0.30    # linear-space chromaticity ratios
+  delta_e2000:         0.30    # Sharma 2005 — headline perceptual color (Lab)
+  lpips:               0.05    # LPIPS-AlexNet — sole learned-perceptual (matches metric)
+  # --- Identifiability of the R · L factorisation ---
+  dir_consistency_R:   0.15    # R is direction-invariant (same-scene pairs)
+  probe_sh:            0.10    # chrome-probe SH — L anchor (C2, training-only)
+  xdir_relight:        0.10    # cross-direction R·L (C4, novelty B; warmup)
+  retinex_constraint:  0.02    # strict R·L=I anchor (warmup; low — mild fight w/ dir_consistency_R)
+  # --- Spatial / material priors (cannot fight recon) ---
+  region_var:          0.10    # within GT-chroma-cluster uniformity on I_out
+  material_ce:         0.05    # MaterialHead aux CE (C5 — material-uniform latent)
+  material_R_var:      0.10    # within-material R variance (C5 — material-uniform reflectance)
+  # --- Local colour-cast removal (non-fighting, redesigned) ---
+  local_chroma:        0.05    # edge-aware chroma-TV on I_out (NOT R+SAM ids)
+  tv_L:                0.02    # edge-aware TV on L — pure low-weight regulariser
+  # --- Colour-constancy aux (trains the global illuminant head) ---
+  illuminant_angular:  0.05    # angular supervision of the global illuminant head (training-only aux)
+  # --- Light-direction prediction (trains the DirectionHead, contribution C) ---
+  direction_pred:      0.10    # regress predicted (φ,θ,b) → GT; enables null-token-free inference
+  # --- Specular branch (trains the specular head) ---
+  specular_bce:        0.10    # lowest-confidence lever; keeps highlights out of R
+
+loss_options:
+  # Recon mask threshold — excludes near-saturated pixels from pixel-wise
+  # losses so the model doesn't learn to predict clipped highlights.
+  highlight_mask_threshold: 0.95
+  # Step-based linear warmup envelope. Effective weight for each term in
+  # `loss_warmup_terms` ramps from `loss_warmup_floor` → 1 over
+  # `loss_warmup_iters` optimizer steps. The floor keeps soft terms
+  # contributing a small, *fixed* gradient from step 0 instead of being
+  # amplified out of bf16 noise.
+  loss_warmup_iters: 3000          # was 1000 — ~1 epoch on this dataset
+  loss_warmup_floor: 0.05          # NEW — minimum envelope value
+  # Step-100 skip: retinex_constraint and xdir_relight are meaningless
+  # before R, L have any structure. Setting > 0 holds them at zero for
+  # the first N optimizer steps so the bf16-near-zero spikes don't
+  # propagate. Empirical: 35,349-step run showed 360k× swings on
+  # retinex_constraint in the first 100 iterations.
+  loss_factorisation_skip_iters: 100
+  loss_warmup_terms:
+    - retinex_constraint
+    - xdir_relight
+  # Back-compat epoch-based schedule (unused by the final baseline).
+  loss_schedule: {}
+
+augmentation:
+  # Train-only. Inputs only — target is the canonical flat-lit reference.
+  # sensor_noise disabled: MIT-MI is studio capture; injecting Gaussian noise
+  # creates a train/val distribution mismatch with no test-time payoff on the
+  # same dataset. synthetic_specular probability halved (0.15 → 0.08): the
+  # specular head is off, so spots act as label noise rather than supervision.
+  brightness:           {enabled: true,  range: [0.92, 1.08]}
+  sensor_noise:         {enabled: false, sigma_range: [0.002, 0.012], p: 0.5}
+  color_temperature:    {enabled: true,  strength: 0.15, p: 0.5}
+  exposure:             {enabled: true,  gamma_range: [0.8, 1.25], gain_range: [0.8, 1.2], p: 0.4}
+  synthetic_specular:   {enabled: true,  max_spots: 3, p: 0.08}
+  local_illumination:   {enabled: true,  strength: 0.12, p: 0.15}
+
+logging:
+  log_interval: 25
+  # Media (prediction + worst-failure image grids) are NOT logged to wandb
+  # during training — rendering them costs extra forward passes + uploads per
+  # epoch. Qualitative figures for the paper are regenerated offline by
+  # scripts/make_report.py from the saved checkpoint, so Overleaf output is
+  # unaffected. Set true to stream the grids to wandb section 1_media live.
+  log_media: false
+  val_sample_count: 3        # 3 prediction images per logged step (when log_media)
+  worst_top_k: 3             # 3 worst-failure images per logged step (when log_media)
+
+wandb:
+  project: dainet
+  entity: null
+  run_name: null
+  mode: online
+  tags: [dainet, convnext_base, swinv2]
