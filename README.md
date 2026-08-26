@@ -35,13 +35,13 @@ $$I_{\text{out}} = \text{clamp}(R \cdot L, 0, 1)$$
 
 Models trained from scratch on MIT-MI at an equal budget (30 unseen scenes × 25 directions = 750 images, probe-masked):
 
-| Model | PSNR ↑ | MS-SSIM ↑ | LPIPS ↓ | Params |
-| :--- | :---: | :---: | :---: | :---: |
-| Restormer (CVPR'22) | 21.10 | 0.846 | 0.165 | — |
-| Retinexformer (ICCV'23) | 21.57 | 0.858 | 0.155 | — |
-| IFBlend (ECCV'24) | 22.28 | 0.877 | 0.155 | 383 M |
-| RLN2 (ICCV'25) | 22.32 | 0.877 | **0.145** | 370 M |
-| **DAINet (Ours)** | **23.83** | **0.880** | 0.218 | **126 M** |
+| Model | PSNR ↑ | MS-SSIM ↑ | LPIPS ↓ |
+| :--- | :---: | :---: | :---: |
+| Restormer (CVPR'22) | 21.10 | 0.846 | 0.165 |
+| Retinexformer (ICCV'23) | 21.57 | 0.858 | 0.155 |
+| IFBlend (ECCV'24) | 22.28 | 0.877 | 0.155 |
+| RLN2 (ICCV'25) | 22.32 | 0.877 | **0.145** |
+| **DAINet (Ours)** | **23.83** | **0.880** | 0.218 |
 
 ---
 
