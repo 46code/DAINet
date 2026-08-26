@@ -22,7 +22,7 @@
 
 ## Overview
 
-DAINet factorizes a single directional sRGB photo into intrinsic reflectance $R$ and illumination $L$ to reconstruct a flat-lit reference image:
+DAINet factorizes a single directional sRGB photo into reflectance $R$ and illumination $L$ to reconstruct a flat-lit reference image:
 
 $$I_{\text{out}} = \text{clamp}(R \cdot L, 0, 1)$$
 
