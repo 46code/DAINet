@@ -27,7 +27,7 @@ DAINet factorizes a single directional sRGB photo into reflectance $R$ and illum
 $$I_{\text{out}} = \text{clamp}(R \cdot L, 0, 1)$$
 
 - **Core Finding:** Training on multi-direction lighting diversity provides a **+1.47 dB** gain over single-direction training.
-- **Key Advantage:** Achieves state-of-the-art illumination normalization on the MIT-MI benchmark at **126 M** parameters using single-image RGB-only inference.
+- **Key Advantage:** Achieves state-of-the-art illumination normalization on the MIT-MI benchmark using single-image RGB-only inference.
 
 ---
 
